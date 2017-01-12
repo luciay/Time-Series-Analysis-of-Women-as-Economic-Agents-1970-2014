@@ -1,4 +1,4 @@
-# general_social_survey
+# abstract
 TIME-SERIES ANALYSIS ON BEHAVIORS AND ATTITUDES TOWARDS WOMEN AS ECONOMIC AGENTS 
 by Lucia Yu and Meredith Mante
 
