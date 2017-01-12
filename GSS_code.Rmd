@@ -1,0 +1,1008 @@
+---
+title: "gss_women_labor_force"
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+
+
+```{r, knitsetup}
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=40), tidy=TRUE)
+opts_chunk$set(dev = 'pdf')
+```
+
+
+```{r, datasetup}
+library(tidyr)
+library(dplyr)
+library(quantmod)
+library(tseries)
+library(lmtest)
+library(vars)
+#load data
+gss.df = data.frame(read.csv(file = "~/Documents/Data Science/Project/gssdata1.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE))
+
+```
+
+After importing the GSS data, it required cleaning. Initially, we set all missing values to null strings. 
+
+```{r }
+
+#turn "Not applicable" and 0 into empty strings
+gss.df[gss.df == "Not applicable"] <- ""
+gss.df[gss.df == "0"] <- ""
+
+```
+
+One issue that we encountered in cleaning our data was discrepancy in scores for the occupational prestige metric for some of our respondents. The dataset included two different columns for occupational prestige with differing values for some respondents. Analysis of the observations showed that two different values for this metric were listed for all respondents in the years from 1988 - 1990. Further research on the dataset confirmed that the occupational prestige scale was renormed in 1989 to reflect changes in the workforce. In the years from 1988-1990, scores were reported for both the older scale and the new scale. Our solution was to use only the values from the newer scale beginning in 1988, but to discuss this issue as a potential confounder. 
+
+```{r }
+
+#handling of data discrepancy with prestige scores
+
+#subset of all participants with duplicate prestige scores, n = 4135
+gss_dup_prestige <- subset(gss.df, Rs.occupational.prestige.score...1980. != "" & Rs.occupational.prestige.score...1970. != "")
+
+#subset of all participants from 1988-1990, n = 4390
+gss_dup_year <- subset(gss.df, Gss.year.for.this.respondent == "1988" | Gss.year.for.this.respondent == "1989" | Gss.year.for.this.respondent == "1990")
+
+#find set difference of these two subsets - function found here: http://r.789695.n4.nabble.com/set-difference-between-two-data-frames-td4679499.html
+setdiffDF <- function(A, B){
+  f <- function(A, B)
+    A[!duplicated(rbind(B, A))[nrow(B) + 1:nrow(A)], ]
+  df1 <- f(A, B)
+  df2 <- f(B, A)
+  rbind(df1, df2)
+}
+
+# n = 254, therefore almost all of the participants from 1988-1990 have a discrepancy in their scores
+gss_diff = setdiffDF(gss_dup_year, gss_dup_prestige) 
+
+# n = 255 have no entry in either prestige column
+# confirms that discrepancies exist for all participants from 1988 to 1990 with entered prestige scores 
+gss_prestige_blank <- subset(gss_dup_year, Rs.occupational.prestige.score...1980. == "" & Rs.occupational.prestige.score...1970. == "")
+
+#run t-test to see if these inconsistent scores differ by a significant amount
+#first convert columns to numeric from chr
+gss_dup_prestige$Rs.occupational.prestige.score...1970. = as.numeric(as.character(gss_dup_prestige$Rs.occupational.prestige.score...1970.))
+gss_dup_prestige$Rs.occupational.prestige.score...1980. = as.numeric(as.character(gss_dup_prestige$Rs.occupational.prestige.score...1980.))
+result_t = t.test(gss_dup_prestige$Rs.occupational.prestige.score...1970., gss_dup_prestige$Rs.occupational.prestige.score...1980.)
+# scores are significantly different when metric was rescaled - what to do?
+result_t
+
+#solution - retain only the newer scores
+gss.df[21876:26265,15] <- ""
+
+#unite columns
+gss.df <- unite(gss.df, Occupational.prestige.avg, Rs.occupational.prestige.score...1970., Rs.occupational.prestige.score...1980., sep = "", remove = FALSE)
+
+#change values to numeric
+gss.df$Occupational.prestige.avg = as.numeric(as.character(gss.df$Occupational.prestige.avg))
+gss.df$Rs.occupational.prestige.score...1970. = as.numeric(as.character(gss.df$Rs.occupational.prestige.score...1970.))
+gss.df$Rs.occupational.prestige.score...1980. = as.numeric(as.character(gss.df$Rs.occupational.prestige.score...1980.))
+```
+
+The dataset also included multiple columns for other metrics. For example, one column described occupations for all respondents from the 1970s and another column held this data for respondents from the 1980s onward. The same duplication of columns was true for the college major field and the occupation code metric. Where applicable, these columns were merged. Additionally, before we could perform analysis, numeric data that was imported as characters had to be converted to numeric values. In the last step before our analysis, all empty fields were filled with NA. 
+
+```{r }
+                     
+#unite columns 
+gss.df <- unite(gss.df, Occupation, Respondent.s.occupation..1980.census, Respondent.s.occupation..1970.census, sep = "", remove = TRUE)
+
+gss.df <- unite(gss.df, College.major, College.major.1, College.major.2, sep = "", remove = TRUE)
+
+gss.df <- unite(gss.df, Occupation.code, Rs.census.occupation.code..1970., Rs.census.occupation.code..1980., sep = "", remove = TRUE)
+
+gss.df <- unite(gss.df, Occupation.code_all, Occupation.code, Rs.census.occupation.code..2010., sep = "", remove = TRUE)
+
+#convert to numeric
+
+gss.df$Gss.year.for.this.respondent = as.numeric(as.character(gss.df$Gss.year.for.this.respondent))
+
+gss.df$Age.of.respondent = as.numeric(as.character(gss.df$Age.of.respondent))
+
+gss.df$Occupation = as.numeric(as.character(gss.df$Occupation))
+
+gss.df$Respondent.income.in.constant.dollars = as.numeric(as.character(gss.df$Respondent.income.in.constant.dollars))
+
+#fill in NAs
+
+gss.df[gss.df == ""] <- NA
+
+gss.df[gss.df == "0"] <- NA
+
+```
+
+Initial summary statistics on our dataset indicated some useful information on the respondents such as median/mean age and median/mean income. We also counted the number of respondents per year and calculated an average number of respondents per year. 
+
+Our intial plan was to subset the data to focus exclusively on women in computer science occupations. However, when we created a time series from this subset, the average sample size per year was only 6.6.
+```{r }
+summary(gss.df)
+
+gss.count.year <- count(gss.df, Gss.year.for.this.respondent)
+gss.avg.respondents.per.year <- mean(gss.count.year$n, na.rm = TRUE)
+gss.avg.respondents.per.year
+
+#separate by Comp and Other
+toMatch = c("Computer systems analysts", "Computer programmers",
+            "Computer specialists, n.e.c.", "Computer network architects", 
+            "Computer and information systems managers", "Software developers, applications and systems software", "Network and computer systems administrators", "Computer hardware engineers", "Information security analysts", "computer and peripheral equipment operators", "computer science teachers", "computer support specialists")
+gss.df$Occupation.code_all [grepl(paste(toMatch,collapse="|"),gss.df$Occupation.code_all)]<-"COMP"
+
+#subset COMP dataframe
+gss.womenCS <- gss.df[which(gss.df$Occupation.code_all=="COMP" & gss.df$Respondents.sex == "Female"), ]
+
+#count by year for COMP
+library(dplyr)
+gss.womenCS <- count(gss.womenCS, Gss.year.for.this.respondent)
+womenCS.avg.per.year <- mean(gss.womenCS$n)
+womenCS.avg.per.year
+```
+
+The first step of our analysis was to subset our dataset into working men and working women. First, we checked the total number of male and female respondents in the survey. Then, we further subsetted the dataset to include one dataset of working women and one dataset of working men. In order to account for variations in the number of participants from year to year, we calculated the percentage of working women in each year and the percentage of working men in each year.
+
+```{r }
+#break into male/female
+gss.male = gss.df[which(gss.df$Respondents.sex == "Male"),]
+gss.M.count = count(gss.male, Gss.year.for.this.respondent)
+gss.female = gss.df[which(gss.df$Respondents.sex == "Female"),]
+gss.F.count = count(gss.female, Gss.year.for.this.respondent)
+
+#break into male/female working
+gss.male.work = gss.df[which(gss.df$Respondents.sex == "Male" & gss.df$Respondent.income.in.constant.dollars > 0 & gss.df$Occupation.code_all != "NA"),]
+gss.M.count.work = count(gss.male.work, Gss.year.for.this.respondent)
+gss.female.work = gss.df[which(gss.df$Respondents.sex == "Female" & gss.df$Respondent.income.in.constant.dollars > 0 & gss.df$Occupation.code_all != "NA"),]
+gss.F.count.work = count(gss.female.work, Gss.year.for.this.respondent)
+
+#check male/female not working
+gss.male.notw = gss.df[which(gss.df$Respondents.sex == "Male" & (is.na(gss.df$Respondent.income.in.constant.dollars) | is.na(gss.df$Occupation.code_all))),]
+gss.M.count.notw = count(gss.male.notw, Gss.year.for.this.respondent)
+gss.female.notw = gss.df[which(gss.df$Respondents.sex == "Female" & (is.na(gss.df$Respondent.income.in.constant.dollars) | is.na(gss.df$Occupation.code_all))),]
+gss.F.count.notw = count(gss.female.notw, Gss.year.for.this.respondent)
+
+#take percentage
+gss.count.year <- na.omit(gss.count.year)
+gss.M.count.work[,"percent.working"] <- (gss.M.count.work$n / gss.M.count[3:30,]$n) * 100
+gss.F.count.work[,"percent.working"] <- (gss.F.count.work$n / gss.F.count[3:30,]$n) * 100
+
+
+```
+
+First, we plotted the percentage of surveyed women who were working. 
+
+```{r }
+plot(gss.F.count.work$percent.working, 
+     type = "l", xlab = "Year", ylab = "% Female Respondents", main = "Percent of Female GSS Respondents in the Workforce (1974-2014)", xaxt='n')
+axis(1, at=seq(1, 28, by=1), labels = FALSE)
+text(seq(1, 28, by=1), par("usr")[3] - 0.2, labels = gss.F.count.work$Gss.year.for.this.respondent,pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+```
+
+We calculated the percent of male and female respondents for each year who reported that they were satisfied with their jobs. 
+
+```{r, jobsatisfaction}
+#subset dataset only for women answering "Very satisfied" or "Mod. satisfied" and count by year
+gss.F.worksat <- gss.female.work[which(gss.female.work$Job.or.housework == "Very satisfied" | gss.female.work$Job.or.housework == "Mod. satisfied"), ]
+gss.F.worksat.na <- gss.female.work[which(is.na(gss.female.work$Job.or.housework) | gss.female.work$Job.or.housework == "Don't know" | gss.female.work$Job.or.housework == "No answer"),]
+gss.F.count.work[,c("Job.sat.na.year", "Job.sat.na.count")] <- count(gss.F.worksat.na, Gss.year.for.this.respondent)
+gss.F.count.work[,c("Job.sat.year", "Job.sat.count")] <- count(gss.F.worksat, Gss.year.for.this.respondent)
+
+#take percentage
+gss.F.count.work[,"percentOfWomenSat"] <- (gss.F.count.work$Job.sat.count / (gss.F.count.work$n - gss.F.count.work$Job.sat.na.count)) * 100
+
+#subset dataset only for men answering "Very satisfied" or "Mod. satisfied" and count by year
+gss.M.worksat <- gss.male.work[which(gss.male.work$Job.or.housework == "Very satisfied" | gss.male.work$Job.or.housework == "Mod. satisfied"), ]
+gss.M.worksat.na <- gss.male.work[which(is.na(gss.male.work$Job.or.housework) | gss.male.work$Job.or.housework == "Don't know" | gss.male.work$Job.or.housework == "No answer"),]
+gss.M.count.work[,c("Job.sat.na.year", "Job.sat.na.count")] <- count(gss.M.worksat.na, Gss.year.for.this.respondent)
+gss.M.count.work[,c("Job.sat.year", "Job.sat.count")] <- count(gss.M.worksat, Gss.year.for.this.respondent)
+
+#take percentage
+gss.M.count.work[,"percentOfMenSat"] <- (gss.M.count.work$Job.sat.count / (gss.M.count.work$n - gss.M.count.work$Job.sat.na.count)) * 100
+
+plot(gss.F.count.work$percentOfWomenSat, type = "l", xlab = "Year", ylab = "% Reporting Job Satisfaction", main = "Percent of GSS Respondents Reporting Job Satisfaction (1974-2014)", col = "red", xaxt='n', ylim=c(80,90))
+points(gss.M.count.work$percentOfMenSat, type = "l", col = "blue")
+legend(x=19, y=83, 
+        legend=c("Men", "Women"),
+        col=c("blue", "red"), lwd=1, lty=1, 
+        pch=c(NA,NA), text.width = 7, bty='n')
+axis(1, at=seq(1, 28, by=1), labels = FALSE)
+text(seq(1, 28, by=1), par("usr")[3] - 0.2, labels = gss.F.count.work$Gss.year.for.this.respondent, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+```
+
+Then we took the incomes of both men and women in the workforce and proceeded to calculate the percent change in incomes over the 35 years for both genders.
+
+```{r, income}
+#percent change in incomes in year
+library(tfplot)
+
+#take columns relevant to income analysis (year, gender, income)
+gssdata_income_gender <- cbind(gss.df$Gss.year.for.this.respondent, gss.df$Respondents.sex, gss.df$Respondent.income.in.constant.dollars)
+
+#convert to time series object
+gss_income_gender.ts <- ts(gssdata_income_gender)
+gss_income_gender <- data.frame(gss_income_gender.ts)
+colnames(gss_income_gender) <- c("year", "gender", "income")
+
+#convert income to integer and NA's to 0
+gss_income_gender$income <- as.numeric(as.character(gss_income_gender$income))
+gss_income_gender$income[is.na(gss_income_gender$income)] <- 0
+
+#calculate the outliers
+summary(gss_income_gender)
+IQR <- 28668 - 0 #3rd Qu - 1st Qu.
+outlierRange <- 1.5*(IQR)
+upperRange <- outlierRange+28669
+
+#remove outliers from dataset
+gss_income_gender <- subset(gss_income_gender, income < upperRange)
+
+#remove all incomes that are 0 -- assume these people are not in the workforce
+gss_income_gender_workforce <- data.frame(subset(gss_income_gender, income != 0))
+gss_income_gender_workforce_F <- subset(gss_income_gender_workforce, gender == 'Female')
+gss_income_gender_workforce_M <- subset(gss_income_gender_workforce, gender == 'Male')
+
+#calculate average for all, F and M
+gss_avg_income_gender_workforce = aggregate(gss_income_gender_workforce$income, list(gss_income_gender_workforce$year), FUN = mean, na.rm = TRUE)
+colnames(gss_avg_income_gender_workforce) <- c("year", "avgincome")
+gss_avg_income_gender_workforce_F = aggregate(gss_income_gender_workforce_F$income, list(gss_income_gender_workforce_F$year), FUN = mean, na.rm = TRUE)
+colnames(gss_avg_income_gender_workforce_F) <- c("year", "avgincome")
+gss_avg_income_gender_workforce_M = aggregate(gss_income_gender_workforce_M$income, list(gss_income_gender_workforce_M$year), FUN = mean, na.rm = TRUE)
+colnames(gss_avg_income_gender_workforce_M) <- c("year", "avgincome")
+
+#plot average incomes
+plot(gss_avg_income_gender_workforce$avgincome, type = "l", ylab="Average Income in USD", main = "Average Income per Year (1975-2014)", xaxt='n', xlab="Year", ylim=c(10000,40000))
+legend(x=20, y=20000, c("Male","All","Female"),lty=c(1,1), lwd=0.75,col=c("blue","black","red"), bty='n')
+axis(1, at=seq(1, 28, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 28, by=1), par("usr")[3] - 0.2, labels = gss_avg_income_gender_workforce$year,pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+points(gss_avg_income_gender_workforce_F$avgincome, type = "l", col = "red")
+points(gss_avg_income_gender_workforce_M$avgincome, type = "l", col = "blue")
+
+#calculate percent change
+gss_avg_income_gender_workforce.ts <- ts(gss_avg_income_gender_workforce)
+gss_avg_income_gender_workforce_F.ts <- ts(gss_avg_income_gender_workforce_F)
+gss_avg_income_gender_workforce_M.ts <- ts(gss_avg_income_gender_workforce_M)
+
+gss_perChange_avg_income = data.frame(percentChange(gss_avg_income_gender_workforce.ts))
+gss_perChange_avg_income$year = gss_avg_income_gender_workforce$year[-1]
+
+gss_perChange_avg_income_F = data.frame(percentChange(gss_avg_income_gender_workforce_F.ts))
+gss_perChange_avg_income_F$year = gss_avg_income_gender_workforce$year[-1]
+
+gss_perChange_avg_income_M = data.frame(percentChange(gss_avg_income_gender_workforce_M.ts))
+gss_perChange_avg_income_M$year = gss_avg_income_gender_workforce$year[-1]
+
+#summary stats of percent change
+summary(gss_perChange_avg_income)
+summary(gss_perChange_avg_income_F)
+summary(gss_perChange_avg_income_M)
+
+#plot of overall percent change in average income
+plot(gss_perChange_avg_income$avgincome, ylab="% Change from Previous Year", xlab="Year", main = "Percent Change in Average Income per Year (1975-2014)", ylim=c(-20,20), type = "l", xaxt='n')
+legend(x=20, y=-9, c("Male","All","Female"),lty=c(1,1), lwd=0.75,col=c("blue","black","red"), bty='n')
+axis(1, at=seq(1, 27, by=1), labels = FALSE)
+text(seq(1, 27, by=1), par("usr")[3] - 0.2, labels = gss_perChange_avg_income$year,pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0, lty=3)
+points(gss_perChange_avg_income_F$avgincome, type = "l", col = "red")
+points(gss_perChange_avg_income_M$avgincome, type = "l", col = "blue")
+
+plot(gss_perChange_avg_income$avgincome, ylab="% Change from Previous Year",  xlab="Year", main = "Percent Change in Income per Year (1975-2014)", sub="All vs. Female Incomes", ylim=c(-20,20), type="l", xaxt='n')
+legend(x=20, y=-10, c("All","Female"),lty=c(1,1), lwd=0.75,col=c("black","red"), bty='n')
+axis(1, at=seq(1, 27, by=1), labels = FALSE)
+text(seq(1, 27, by=1), par("usr")[3] - 0.2, labels = gss_perChange_avg_income$year,pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0, lty=3)
+points(gss_perChange_avg_income_F$avgincome, type = "l", col = "red")
+
+plot(gss_perChange_avg_income$avgincome, ylab="% Change from Previous Year", xlab="Year", main = "Percent Change in Average Income per Year (1975-2014)", sub="All vs. Male Incomes", ylim=c(-20,20), type="l", xaxt='n')
+legend(x=20, y=-10, c("All","Male"),lty=c(1,1), lwd=0.75,col=c("black","blue"), bty='n')
+axis(1, at=seq(1, 27, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 27, by=1), par("usr")[3] - 0.2, labels = gss_perChange_avg_income$year,pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0, lty=3)
+points(gss_perChange_avg_income_M$avgincome, type = "l", col = "blue")
+
+gss_perChange_avg_income
+gss_perChange_avg_income_F
+gss_perChange_avg_income_M
+```
+
+Next, from the two questions about women as economic agents ("approve or disapprove of a married woman earning money in business or industry" and "employers should make special efforts to hire and promote qualified women") we extracted the approval ratings of both these questions and created a new variable which describes the sentiment towards women in the workforce.
+
+```{r, supportwomen}
+library(plyr)
+library(dplyr)
+
+#percentage
+#subset dataset only for women answering "Approved" or "Strongly Agree"/"Agree"
+gss_women_work_approve = gss.df[which(gss.df$Should.women.work == "Approve" | gss.df$Should.hire.and.promote.women == "Strongly agree", gss.df$Should.hire.and.promote.women == "Agree"),  ]
+gss_women_work_approval <- data.frame(gss_women_work_approve$Gss.year.for.this.respondent, gss_women_work_approve$Respondents.sex,gss_women_work_approve$Should.women.work,gss_women_work_approve$Should.hire.and.promote.women)
+
+#get raw number of approvals
+gss_women_work_approval_rawnum <- data.frame(gss_women_work_approval$gss_women_work_approve.Gss.year.for.this.respondent, gss_women_work_approval$gss_women_work_approve.Respondents.sex)
+
+gss_women_work_approval_rawnum_count <- data.frame(table(gss_women_work_approval_rawnum))
+colnames(gss_women_work_approval_rawnum_count) <- c("year", "gender", "count")
+
+#women who approve
+gss_women_work_approval_count_Female <- data.frame(subset(gss_women_work_approval_rawnum_count, gss_women_work_approval_rawnum_count$gender == 'Female'))
+#take year and freq columns only
+gss_women_work_approval_count_F <- data.frame(gss_women_work_approval_count_Female$year, gss_women_work_approval_count_Female$count)
+#renames those columns
+colnames(gss_women_work_approval_count_F) <-  c("year","count")
+
+#men who approve
+gss_women_work_approval_count_Male <- data.frame(subset(gss_women_work_approval_rawnum_count, gss_women_work_approval_rawnum_count$gender == 'Male'))
+#take year and freq columns only
+gss_women_work_approval_count_M <- data.frame(gss_women_work_approval_count_Male$year, gss_women_work_approval_count_Male$count)
+#renames those columns
+colnames(gss_women_work_approval_count_M) <-  c("year","count")
+
+#total who approve
+gss_women_work_approval_count <- aggregate(gss_women_work_approval_rawnum_count$count, list(gss_women_work_approval_rawnum_count$year), FUN = sum)
+colnames(gss_women_work_approval_count) <- c("year", "count")
+
+#subset dataset only for women answering "Dispprove" or "Strongly Disagree"/"Disagree"
+gss_women_work_disapprove = gss.df[which(gss.df$Should.women.work == "Disapprove" | gss.df$Should.hire.and.promote.women == "Strongly disagree", gss.df$Should.hire.and.promote.women == "Disagree"),  ]
+gss_women_work_disapproval <- data.frame(gss_women_work_disapprove$Gss.year.for.this.respondent, gss_women_work_disapprove$Respondents.sex,gss_women_work_disapprove$Should.women.work,gss_women_work_disapprove$Should.hire.and.promote.women)
+
+#get raw number of disapprovals
+gss_women_work_disapproval_rawnum <- data.frame(gss_women_work_disapproval$gss_women_work_disapprove.Gss.year.for.this.respondent, gss_women_work_disapproval$gss_women_work_disapprove.Respondents.sex)
+
+gss_women_work_disapproval_rawnum_count <- data.frame(table(gss_women_work_disapproval_rawnum))
+colnames(gss_women_work_disapproval_rawnum_count) <- c("year", "gender", "count")
+#women who disapprove
+gss_women_work_disapproval_count_Female <- data.frame(subset(gss_women_work_disapproval_rawnum_count, gss_women_work_disapproval_rawnum_count$gender == "Female"))
+#take year and count columns only
+gss_women_work_disapproval_count_F <- data.frame(gss_women_work_disapproval_count_Female$year, gss_women_work_disapproval_count_Female$count)
+colnames(gss_women_work_disapproval_count_F) <- c("year", "count")
+
+
+#men who approve
+gss_women_work_disapproval_count_Male <- data.frame(subset(gss_women_work_disapproval_rawnum_count, gss_women_work_disapproval_rawnum_count$gender == "Male"))
+#take year and count columns only
+gss_women_work_disapproval_count_M <- data.frame(gss_women_work_disapproval_count_Male$year, gss_women_work_disapproval_count_Male$count)
+colnames(gss_women_work_disapproval_count_M) <- c("year", "count")
+
+#total who approve
+gss_women_work_disapproval_count <- aggregate(gss_women_work_disapproval_rawnum_count$count, list(gss_women_work_disapproval_rawnum_count$year), FUN = sum)
+colnames(gss_women_work_disapproval_count) <- c("year", "count")
+
+#combine approve and disapprove
+#by female
+gss_women_work_count_percentapproval_F <- data.frame(gss_women_work_approval_count_F$year, (gss_women_work_approval_count_F$count/(gss_women_work_approval_count_F$count + gss_women_work_disapproval_count_F$count)*100))
+colnames(gss_women_work_count_percentapproval_F) <- c("year", "percent")
+summary(gss_women_work_count_percentapproval_F)
+
+#by male
+gss_women_work_count_percentapproval_M <- data.frame(gss_women_work_approval_count_M$year, (gss_women_work_approval_count_M$count/(gss_women_work_approval_count_M$count+gss_women_work_disapproval_count_M$count)*100))
+colnames(gss_women_work_count_percentapproval_M) <- c("year", "percent")
+summary(gss_women_work_count_percentapproval_M)
+#by all
+gss_women_work_count_percentapproval <- data.frame(gss_women_work_approval_count$year, (gss_women_work_approval_count$count/(gss_women_work_approval_count$count+gss_women_work_disapproval_count$count)*100))
+colnames(gss_women_work_count_percentapproval) <- c("year", "percent")
+
+#plot all three lines
+plot(gss_women_work_count_percentapproval$percent, ylim=c(50, 100), main="Percent Support of Women as Economic Agents (1972-2014)", ylab="% Support", xlab = "Year", type="l", xaxt='n')
+legend(x=1, y=101, c("Male","All","Female", "Change in Census Question"),lty=c(1,1,1,5), col=c("blue","black","red", "black"), bty='n', lwd=0.75,text.width = 7, cex=0.7)
+axis(1, at=seq(1, 25, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 25, by=1), par("usr")[3], labels = gss_women_work_count_percentapproval$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(v=17:17, lty=5)
+points(gss_women_work_count_percentapproval_F$percent, type = "l", col = "red")
+points(gss_women_work_count_percentapproval_M$percent, type = "l", col = "blue")
+
+#plot overall and women
+plot(gss_women_work_count_percentapproval$percent, ylim=c(50, 100), main="Percent Support of Women as Economic Agents (1972-2014)", ylab="% Support", xlab="Year", type="l", xaxt='n')
+points(gss_women_work_count_percentapproval_F$percent, type = "l", col = "red")
+legend(x=1, y=100, c("All","Female", "Change in Census Question"),lty=c(1,1,5), col=c("black","red", "black"), bty='n', lwd=0.75,text.width = 7, cex=0.7)
+axis(1, at=seq(1, 25, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 25, by=1), par("usr")[3], labels = gss_women_work_count_percentapproval$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(v=17:17, lty=5)
+
+#plot overall and men
+plot(gss_women_work_count_percentapproval$percent, ylim=c(50, 100), main="Percent Support of Women as Economic Agents (1972-2014)", ylab="% Support", xlab="Year", type="l", xaxt='n')
+points(gss_women_work_count_percentapproval_M$percent, type = "l", col = "blue")
+legend(x=1, y=100, c("All","Male", "Change in Census Question"),lty=c(1,1,5), col=c("black","blue", "black"), bty='n', cex=0.7, lwd=0.75,text.width = 7)
+axis(1, at=seq(1, 25, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 25, by=1), par("usr")[3], labels = gss_women_work_count_percentapproval$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(v=17:17, lty=5)
+
+#plot men and women
+plot(gss_women_work_count_percentapproval_F$percent, ylim=c(50, 100), main="Percent Support of Women as Economic Agents (1972-2014)", ylab="% Support", xlab="Year", type="l", xaxt='n', col="red")
+points(gss_women_work_count_percentapproval_M$percent, type = "l", col = "blue")
+legend(x=1, y=100, c("Female", "Male", "Change in Question"),lty=c(1,1,5), col=c("red","blue", "black"), bty='n', cex=0.7, lwd=0.75,text.width = 7)
+axis(1, at=seq(1, 25, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 25, by=1), par("usr")[3], labels = gss_women_work_count_percentapproval$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(v=17:17, lty=5)
+
+
+#percentage change
+#count percentage change in approval
+gss_women_work_count_percentapproval.ts <- ts(gss_women_work_count_percentapproval)
+gss_women_work_count_percentapproval_F.ts <- ts(gss_women_work_count_percentapproval_F)
+gss_women_work_count_percentapproval_M.ts <- ts(gss_women_work_count_percentapproval_M)
+
+gss_women_work_count_changepercentapproval <- data.frame(percentChange(gss_women_work_count_percentapproval.ts))
+gss_women_work_count_changepercentapproval$year <- gss_women_work_count_percentapproval$year[-1]
+
+gss_women_work_count_changepercentapproval_F <- data.frame(percentChange(gss_women_work_count_percentapproval_F.ts))
+gss_women_work_count_changepercentapproval_F$year <- gss_women_work_count_percentapproval_F$year[-1]
+
+gss_women_work_count_changepercentapproval_M <- data.frame(percentChange(gss_women_work_count_percentapproval_M.ts))
+gss_women_work_count_changepercentapproval_M$year <- gss_women_work_count_percentapproval_M$year[-1]
+
+#plot percent change in approval rates in women
+plot(gss_women_work_count_changepercentapproval$percent, main="Percent Change in Support of Women as Economic Agents", ylim=c(-25, 25), xlab = "Year", ylab = "% Change from Previous Year", type="l", xaxt='n')
+points(gss_women_work_count_changepercentapproval_F$percent, col = "red", type="l")
+points(gss_women_work_count_changepercentapproval_M$percent, col = "blue", type="l")
+legend(x=2, y=-11, c("Female", "All","Male", "Change in Census Question"),lty=c(1,1,1,5),col=c("red","black","blue", "black"), bty='n', lwd=0.75, text.width = 7, cex=0.7)
+axis(1, at=seq(1, 24, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 24, by=1), par("usr")[3], labels = gss_women_work_count_changepercentapproval$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+#horizontal line to see where percent change in approval drops
+#vertical line to demarcate the change in census question
+abline(v=17:17, lty=5) 
+abline(h=0, lty=3) 
+
+
+gss_women_work_count_percentapproval
+gss_women_work_count_percentapproval_F
+gss_women_work_count_percentapproval_M
+
+gss_women_work_count_changepercentapproval
+gss_women_work_count_changepercentapproval_F
+gss_women_work_count_changepercentapproval_M
+
+```
+
+And finally, to make use of our occupational prestige measure, we took the average prestige for all women in a given year and the average prestige for all men in a given year. It should be noted that the prestige metric was no longer recorded after 2010. 
+
+```{r, prestige}
+#calculate overall avg prestige
+gss.prestige.overall <- data.frame(gss.df[which(gss.df$Respondent.income.in.constant.dollars > 0 & gss.df$Occupation.code_all != "NA"),])
+gss.count.work <- count(gss.prestige.overall, vars = "Gss.year.for.this.respondent")
+gss.count.work[,c("avg.prestige.year", "ave.prestige")] <- aggregate(gss.prestige.overall$Occupational.prestige.avg, by = list(gss.prestige.overall$Gss.year.for.this.respondent), FUN = mean, na.rm = TRUE)
+gss.count.work.ts = ts(gss.count.work$ave.prestige)
+gss.count.work[,"prestige.percent.change"] <- data.frame(Delt(gss.count.work.ts) * 100)
+
+#calculate the outliers for female prestige
+summary(gss.female.work$Occupational.prestige.avg)
+IQR.F.prestige <- 51 - 32 #3rd Qu - 1st Qu.
+outlierRange.F <- 1.5*(IQR.F.prestige)
+upperRange.F <- outlierRange+51
+plot(gss.female.work$Occupational.prestige.avg)
+
+#remove outliers from dataset
+prestige.F.no.outliers <- subset(gss.female.work, Occupational.prestige.avg < upperRange.F)
+summary(prestige.F.no.outliers$Occupational.prestige.avg)
+
+#average by year
+count.F.prestige.no.outliers <- aggregate(prestige.F.no.outliers$Occupational.prestige.avg, by = list(prestige.F.no.outliers$Gss.year.for.this.respondent), FUN = mean, na.rm = TRUE)
+colnames(count.F.prestige.no.outliers) <- c("Year","Avg.prestige.F")
+
+#calculate the outliers for male prestige
+summary(gss.male.work$Occupational.prestige.avg)
+IQR.M.prestige <- 51 - 32 #3rd Qu - 1st Qu.
+outlierRange.M <- 1.5*(IQR.F.prestige)
+upperRange.M <- outlierRange+51
+plot(gss.male.work$Occupational.prestige.avg)
+
+#remove outliers from dataset
+prestige.M.no.outliers <- subset(gss.male.work, Occupational.prestige.avg < upperRange.M)
+summary(prestige.M.no.outliers$Occupational.prestige.avg)
+
+#average by year
+count.M.prestige.no.outliers <- aggregate(prestige.M.no.outliers$Occupational.prestige.avg, by = list(prestige.M.no.outliers$Gss.year.for.this.respondent), FUN = mean, na.rm = TRUE)
+colnames(count.M.prestige.no.outliers) <- c("Year","Avg.prestige.M")
+
+#calculate the outliers for overall prestige
+summary(gss.prestige.overall$Occupational.prestige.avg)
+IQR.prestige <- 51 - 32 #3rd Qu - 1st Qu.
+outlierRange.prestige <- 1.5*(IQR.F.prestige)
+upperRange.prestige <- outlierRange+51
+
+#remove outliers from dataset
+prestige.no.outliers <- subset(gss.prestige.overall, Occupational.prestige.avg < upperRange.prestige)
+summary(prestige.no.outliers$Occupational.prestige.avg)
+
+#average by year
+count.prestige.no.outliers <- aggregate(prestige.no.outliers$Occupational.prestige.avg, by = list(prestige.no.outliers$Gss.year.for.this.respondent), FUN = mean, na.rm = TRUE)
+colnames(count.prestige.no.outliers) <- c("Year","Avg.prestige")
+
+#calculate percent change without outliers
+count.F.prestige.no.outliers.ts = ts(count.F.prestige.no.outliers$Avg.prestige.F)
+count.F.prestige.no.outliers[,"prestige.percent.change"] <- data.frame(Delt(count.F.prestige.no.outliers.ts) * 100)
+count.M.prestige.no.outliers.ts = ts(count.M.prestige.no.outliers$Avg.prestige.M)
+count.M.prestige.no.outliers[,"prestige.percent.change"] <- data.frame(Delt(count.M.prestige.no.outliers.ts) * 100)
+count.prestige.no.outliers.ts = ts(count.prestige.no.outliers$Avg.prestige)
+count.prestige.no.outliers[,"prestige.percent.change"] <- data.frame(Delt(count.prestige.no.outliers.ts) * 100)
+
+#calculate female avg prestige with outliers
+gss.F.count.work[,c("avg.prestige.year", "ave.prestige")] <- aggregate(gss.female.work$Occupational.prestige.avg, by = list(gss.female.work$Gss.year.for.this.respondent), FUN = mean, na.rm = TRUE)
+#calculate male avg prestige
+gss.M.count.work[,c("avg.prestige.year", "ave.prestige")] <- aggregate(gss.male.work$Occupational.prestige.avg, by = list(gss.male.work$Gss.year.for.this.respondent), FUN = mean, na.rm = TRUE)
+
+plot(gss.count.work$ave.prestige, type = "l", xlab = "Year", ylab = "Prestige Score (0-97)", main = "Average Job Prestige of Respondents (1974-2010)", col = "black", xaxt='n', ylim=c(35,50))
+points(gss.M.count.work$ave.prestige, type = "l", col = "blue")
+points(gss.F.count.work$ave.prestige, type = "l", col = "red")
+legend(x=17, y=42,
+        legend=c("All","Men", "Women", "Change in Prestige Scoring"),
+        col=c("black","blue", "red", "black"), lwd=0.75, lty=c(1,1,1,5), 
+        pch=c(NA,NA), text.width = 7, bty='n', cex=0.7)
+axis(1, at=seq(1, 26, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 26, by=1), par("usr")[3], labels = gss.F.count.work$Gss.year.for.this.respondent[c(1:26)], pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(v=13:13, lty=5)
+
+
+#remove unneccessary year columns generated by aggregate and count functions
+remove.cols <- c("Job.sat.na.year", "Job.sat.year", "avg.prestige.year")
+gss.F.count.work <- gss.F.count.work[ , !(names(gss.F.count.work) %in% remove.cols)]
+remove.cols <- c("Job.sat.na.year", "Job.sat.year", "avg.prestige.year")
+gss.M.count.work <- gss.M.count.work[ , !(names(gss.M.count.work) %in% remove.cols)]
+```
+
+In order to look for correlations between our variables, we calculated the percent change over the previous year for each of our variables. 
+
+```{r, perchange prestige}
+#percent change in avg prestige for women and men
+gss.F.count.work.ts = ts(gss.F.count.work$ave.prestige)
+gss.F.count.work[,"prestige.percent.change"] <- data.frame(Delt(gss.F.count.work.ts) * 100)
+gss.M.count.work.ts = ts(gss.M.count.work$ave.prestige)
+gss.M.count.work[,"prestige.percent.change"] <- data.frame(Delt(gss.M.count.work.ts) * 100)
+
+plot(gss.count.work$prestige.percent.change, type = "l", xlab = "Year", ylab = "% Change in Score", col = "black", main = "Percent Change in Average Prestige Score (1974-2010)", xaxt='n', ylim=c(-10,10))
+points(gss.M.count.work$prestige.percent.change, type = "l", col = "blue")
+points(gss.F.count.work$prestige.percent.change, type = "l", col = "red")
+legend(x=18, y=-4, 
+        legend=c("All","Men", "Women", "Change in Prestige Scoring"),
+        col=c("black","blue", "red", "black"), lwd=1, lty=c(1,1,1,5), 
+        pch=c(NA,NA), text.width = 7, bty='n', cex=0.7)
+axis(1, at=seq(1, 26, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 26, by=1), par("usr")[3], labels = gss.F.count.work$Gss.year.for.this.respondent[c(1:26)], pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(v=13:13, lty=5)
+
+#plot participation 
+plot(gss.F.count.work[2:28,]$percent.working, type="l", ylim=c(40,100), main="Percent Participation in Workforce (1975-2014)", ylab="% Participation", xlab="Year", xaxt='n', col="red")
+points(gss.M.count.work[2:28,]$percent.working, type="l", col="blue")
+legend(x=10, y=90, c("% of Respondents in Workforce (Female)","% of Respondents in Workforce (Male)"),lty=c(1,1),col=c("red","blue"), bty='n', lwd=0.75, text.width = 7, cex=0.7)
+axis(1, at=seq(1, 27, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 27, by=1), par("usr")[3], labels = gss.F.count.work[2:28,]$Gss.year.for.this.respondent, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0, lty=3)
+
+#percent change in women in the workforce
+gss.F.count.work.ts = ts(gss.F.count.work$percent.working)
+gss.F.count.work[,"working.percent.change"] <- data.frame(Delt(gss.F.count.work.ts) * 100)
+
+plot(gss.F.count.work$working.percent.change, type = "l", xlab = "Year", ylab = "% Change from Previous Year", main = "Percent Change in Female Participation in Workforce (1975-2014)", xaxt='n', ylim=c(-30,30))
+axis(1, at=seq(1, 28, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 28, by=1), par("usr")[3], labels = gss.F.count.work$Gss.year.for.this.respondent, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0, lty=3)
+
+#percent change in job satisfaction for women
+gss.F.count.work.ts = ts(gss.F.count.work$percentOfWomenSat)
+gss.F.count.work[,"jobsat.percent.change"] <- data.frame(Delt(gss.F.count.work.ts) * 100)
+
+plot(gss.F.count.work$jobsat.percent.change, type = "l", xlab = "Year", ylab = "% Change from Previous Year", main = "Percent Change in Female Job Satisfaction (1975-2014)", xaxt='n', ylim=c(-10,10))
+axis(1, at=seq(1, 28, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 28, by=1), par("usr")[3], labels = gss.F.count.work$Gss.year.for.this.respondent, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0, lty=3)
+
+
+```
+
+In our analysis, we looked for correlations between percent change of women in the workforce and 1.) percent change in income, 2.) percent change in support for women in the workforce, 3.) percent change in women's job satisfation and 4.) percent change in average job prestige. 
+
+```{r }
+#correlation percent working vs income
+working.vs.income <- cor.test(gss.F.count.work[2:28,]$working.percent.change, gss_perChange_avg_income_F$avgincome)
+working.vs.income
+
+#correlation percent working vs support for women as economic agents
+working.vs.income <- cor.test(gss.F.count.work[-c(1,3, 6, 9, 12),]$working.percent.change, gss_women_work_count_changepercentapproval[2:24,]$percent)
+working.vs.income
+
+#correlation percent working vs job satisfaction
+working.vs.job.sat <- cor.test(gss.F.count.work$working.percent.change, gss.F.count.work$jobsat.percent.change)
+working.vs.job.sat
+
+#correlation percent working vs avg change in prestige
+working.vs.prestige <- cor.test(gss.F.count.work$working.percent.change, gss.F.count.work$prestige.percent.change)
+working.vs.prestige
+
+#correlation percent working vs job satisfaction
+working.vs.job.sat <- cor.test(gss.F.count.work$working.percent.change, gss.F.count.work$jobsat.percent.change)
+working.vs.job.sat
+
+#income vs. support of women as economic agents
+income.vs.support <- cor.test(gss_perChange_avg_income_F[-c(2, 5, 8, 11),]$avgincome, gss_women_work_count_changepercentapproval[3:25,]$percent)
+income.vs.support
+
+#income vs. job satisfaction
+income.vs.job.sat <- cor.test(gss_perChange_avg_income_F$avgincome, gss.F.count.work[2:28,]$jobsat.percent.change)
+income.vs.job.sat
+
+#income vs. avg occupational prestige
+income.vs.prestige <- cor.test(gss_perChange_avg_income_F$avgincome, gss.F.count.work[2:28,]$prestige.percent.change)
+income.vs.prestige
+
+#support for women as economic agents vs. job satisfaction
+support.vs.job.sat <- cor.test(gss_women_work_count_changepercentapproval[2:24,]$percent, gss.F.count.work[-c(1,3,6,9,12 ),]$jobsat.percent.change)
+support.vs.job.sat
+
+#support for women as economic agents vs. avg occupational prestige
+support.vs.prestige <- cor.test(gss_women_work_count_changepercentapproval[3:23,]$percent, gss.F.count.work[-c(1,3,6,9,12,27,28),]$prestige.percent.change)
+support.vs.prestige
+
+#Significant Correlations
+#correlation percent working vs avg change in prestige
+working.vs.prestige <- cor.test(gss.F.count.work$working.percent.change, gss.F.count.work$prestige.percent.change)
+working.vs.prestige
+
+#F:correlation percent working vs support for women as economic agents
+working.vs.income.F <- cor.test(gss.F.count.work[-c(1,3, 6, 9, 12),]$working.percent.change, gss_women_work_count_changepercentapproval_F[2:24,]$percent)
+working.vs.income.F
+
+#F: income vs. support of women as economic agents
+income.vs.support.F <- cor.test(gss_perChange_avg_income_F[-c(2, 5, 8, 11),]$avgincome, gss_women_work_count_changepercentapproval_F[3:25,]$percent)
+income.vs.support.F
+
+#F: support for women as economic agents vs. avg occupational prestige
+support.vs.prestige.F <- cor.test(gss_women_work_count_changepercentapproval_F[3:23,]$percent, gss.F.count.work[-c(1,3,6,9,12,27,28),]$prestige.percent.change)
+support.vs.prestige.F
+
+
+```
+
+We also analyzed our data for possible correlations in between: 
+1.) percent change in income vs. percent change in support of women in workforce
+2.) percent change in income vs. percent change in job satisfaction
+3.) percent change in income vs. percent change in avg occupational prestige
+4.) percent change in support for women in workforce vs. percent change in job satisfaction
+5.) percent change in support for women in workforce vs. percent change in avg occupational prestige
+
+```{r, corplots}
+
+#prop_F vs prestige_F
+plot(gss.F.count.work$working.percent.change, type = "l", xlab = "Year", ylab = "% Change from Previous Year", main = "Percent Change in Participation in Workforce vs. Percent Change in Prestige (1974-2014)", xaxt='n', ylim=c(-30,30), col="red", cex.main = 0.75)
+points(gss.F.count.work$prestige.percent.change, type = "l", col="black")
+legend(x=2, y=-15, c("% Change of Respondents in Work Force (Female)","% Change in Prestige (Female)"),lty=c(1,1),col=c("red","black"), bty='n', lwd=0.75, text.width = 7, cex=0.7)
+axis(1, at=seq(1, 28, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 28, by=1), par("usr")[3], labels = gss.F.count.work$Gss.year.for.this.respondent, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0, lty=3)
+
+#support_F vs. prestige_F
+plot(gss_women_work_count_changepercentapproval_F$percent, main="Percent Change in Support of Women as Economic Agents vs. Percent Change in Prestige (1974-2014)", ylim=c(-25, 25), xlab = "Year", ylab = "% Change from Previous Year", type="l", xaxt='n', col ="red", cex.main = 0.75)
+points(gss.F.count.work$prestige.percent.change[-c(3, 6, 9, 12)], type = "l", col="black")
+legend(x=2, y=-11, c("% Change in Support of Women as Economic Agents (Female)","% Change in Prestige (Female)","Change in Census Question"),lty=c(1,1,5),col=c("red","black","black"), bty='n', lwd=0.75, text.width = 7, cex=0.7)
+axis(1, at=seq(1, 24, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 24, by=1), par("usr")[3], labels = gss_women_work_count_changepercentapproval$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+#horizontal line to see where percent change in approval drops
+#vertical line to demarcate the change in census question
+abline(v=17:17, lty=5) 
+abline(h=0, lty=3) 
+
+#prop_F vs support_F
+plot(gss_women_work_count_changepercentapproval_F$percent, main="Percent Change in Support of Women as Economic Agents vs. Percent Change in Participation in Workforce (1974-2014)", ylim=c(-25, 35), xlab = "Year", ylab = "% Change from Previous Year", type="l", xaxt='n', col ="red", cex.main = 0.60)
+points(gss.F.count.work$working.percent.change[-c(3, 6, 9, 12)], type = "l", col="black")
+legend(x=7, y=30, c("% Change in Support of Women as Economic Agents (Female)","% Change of Respondents in Work Force (Female)","Change in Census Question"),lty=c(1,1,5),col=c("red","black","black"), bty='n', lwd=0.75, text.width = 7, cex=0.7)
+axis(1, at=seq(1, 24, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 24, by=1), par("usr")[3], labels = gss_women_work_count_changepercentapproval_F$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+#horizontal line to see where percent change in approval drops
+#vertical line to demarcate the change in census question
+abline(v=17:17, lty=5) 
+abline(h=0, lty=3) 
+
+#support_F vs. income_F
+#plot the two variables
+plot(gss_women_work_count_changepercentapproval_F$percent[-c(1)], main="Percent Change in Support of Women as Economic Agents vs. Percent Change in Income (1974-2014)", ylim=c(-25, 25), xlab = "Year", ylab = "% Change from Previous Year", type="l", xaxt='n', col ="red", cex.main = 0.75)
+points(gss_perChange_avg_income_F$avgincome[-c(2, 3, 8, 11)], type = "l", col="black")
+legend(x=5, y=-10, c("% Change in Support of Women as Economic Agents (Female)","% Change in Income (Female)","Change in Census Question"),lty=c(1,1,5),col=c("red","black","black"), bty='n', lwd=0.75, text.width = 7, cex=0.7)
+axis(1, at=seq(1, 23, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 23, by=1), par("usr")[3], labels = gss_perChange_avg_income_F$year[-c(2, 3, 8, 11)], pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+#horizontal line to see where percent change in approval drops
+#vertical line to demarcate the change in census question
+abline(v=17:17, lty=5) 
+abline(h=0, lty=3) 
+
+#support_ALL vs. income_F
+plot(gss_women_work_count_changepercentapproval[2:16,]$percent, main="Percent Change in Support of Women as Economic Agents vs. Percent Change in Income (1974-1998)", ylim=c(-25, 25), xlab = "Year", ylab = "% Change from Previous Year", type="l", xaxt='n', col ="black", cex.main = 0.75)
+points(gss_perChange_avg_income_F[-c(2, 5, 8, 11, 20:28),]$avgincome, type = "l", col="red")
+legend(x=5, y=-10, c("% Change in Support of Women as Economic Agents (All)","% Change in Income (Female)"),lty=c(1,1),col=c("black", "red"), bty='n', lwd=0.75, text.width = 7, cex=0.7)
+axis(1, at=seq(1, 15, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 15, by=1), par("usr")[3], labels = gss_women_work_count_changepercentapproval[2:16,]$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+#horizontal line to see where percent change in approval drops
+#vertical line to demarcate the change in census question
+abline(v=17:17, lty=5) 
+abline(h=0, lty=3) 
+```
+
+
+```{r, shorter_support}
+#support_ALL vs. income_F 
+#before*********
+income.vs.support_before <- cor.test(gss_perChange_avg_income_F[-c(2, 5, 8, 11, 20:28),]$avgincome, gss_women_work_count_changepercentapproval[2:16,]$percent)
+income.vs.support_before
+
+#after
+income.vs.support_after <- cor.test(gss_perChange_avg_income_F[c(20:27),]$avgincome, gss_women_work_count_changepercentapproval[17:24,]$percent)
+income.vs.support_after
+
+#support_ALL vs. prop_F
+#before
+working.vs.income_before <- cor.test(gss.F.count.work[-c(1,3, 6, 9, 12, 21:28),]$working.percent.change, gss_women_work_count_changepercentapproval[2:16,]$percent)
+working.vs.income_before
+#after
+working.vs.income_after <- cor.test(gss.F.count.work[21:28,]$working.percent.change, gss_women_work_count_changepercentapproval[17:24,]$percent)
+working.vs.income_after
+
+#support_ALL vs. prestige_F
+#before
+support.vs.prestige_before <- cor.test(gss_women_work_count_changepercentapproval_F[1:16,]$percent, gss.F.count.work[-c(3,6,9,12,28,21:27),]$prestige.percent.change)
+support.vs.prestige_before
+
+#after
+support.vs.prestige_after <- cor.test(gss_women_work_count_changepercentapproval_F[17:24,]$percent, gss.F.count.work[21:28,]$prestige.percent.change)
+support.vs.prestige_after
+
+#support_ALL vs. jobsat_F
+support.vs.job.sat_before <- cor.test(gss_women_work_count_changepercentapproval_F[1:16,]$percent, gss.F.count.work[-c(3,6,9,12,21:28),]$jobsat.percent.change)
+support.vs.job.sat_before
+
+support.vs.job.sat_after <- cor.test(gss_women_work_count_changepercentapproval_F[17:24,]$percent, gss.F.count.work[c(21:28),]$jobsat.percent.change)
+support.vs.job.sat_after
+
+
+#correlation percent working vs avg change in prestige no outliers
+working.vs.prestige.no.outliers <- cor.test(gss.F.count.work[2:26,]$working.percent.change, count.F.prestige.no.outliers[2:26,]$prestige.percent.change)
+working.vs.prestige.no.outliers
+
+#correlation percent working vs avg change in prestige no outliers (only until 1988)
+working.vs.prestige.b1988.outliers <- cor.test(gss.F.count.work[2:13,]$working.percent.change, count.F.prestige.no.outliers[2:13,]$prestige.percent.change)
+working.vs.prestige.b1988.outliers
+
+#correlation percent working vs avg change in prestige no outliers (only after 1988)
+working.vs.prestige.a1988.outliers <- cor.test(gss.F.count.work[13:26,]$working.percent.change, count.F.prestige.no.outliers[13:26,]$prestige.percent.change)
+working.vs.prestige.a1988.outliers
+
+#income vs. avg occupational prestige no outliers
+income.vs.prestige.no.outliers <- cor.test(gss_perChange_avg_income_F$avgincome, count.F.prestige.no.outliers[2:28,]$prestige.percent.change)
+income.vs.prestige.no.outliers
+
+```
+
+
+```{r, ARIMA}
+library(forecast)
+#income
+#percent change
+plot(gss_perChange_avg_income_F$avgincome, main="Average Income of Female Workforce (1974-2014)", xaxt='n', type="l", ylab="Income (USD)", xlab="Year", ylim=c(-30,30))
+axis(1, at=seq(1, 28, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 28, by=1), par("usr")[3], labels = gss_perChange_avg_income_F$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0)
+
+plot(gss_perChange_avg_income_M$avgincome, main="Average Income of Male Workforce (1974-2014)", xaxt='n', type="l", ylab="Income (USD)", xlab="Year", ylim=c(-30,30))
+axis(1, at=seq(1, 28, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 28, by=1), par("usr")[3], labels = gss_perChange_avg_income_M$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0)
+
+#female
+gss_perChange_avg_income_F.fit<- auto.arima(gss_perChange_avg_income_F$avgincome[23:27], d=2)
+gss_perChange_avg_income_F.pred <- predict(gss_perChange_avg_income_F.fit, n.ahead = 5)
+gss_perChange_avg_income_F.for <- forecast(gss_perChange_avg_income_F.fit, h = 5)
+#forecast
+plot.forecast(gss_perChange_avg_income_F.for, main="Forecast Percent Change in Female Income (10 Years)",sub="(Forecasted from last 5 data points)", ylab="% Change in Income", xaxt='n', xlab="Year")
+axis(1, at=seq(1, 10, by=1), labels = FALSE, cex.axis=0.5)
+labels.F.inc.for <- c(as.character(gss_perChange_avg_income_F$year[23:27]), "2016", "2018", "2020", "2022", "2024")
+text(seq(1, 10, by=1), par("usr")[3], labels = labels.F.inc.for, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+
+#male
+gss_perChange_avg_income_M.fit<- auto.arima(gss_perChange_avg_income_M$avgincome[23:27], d=2)
+gss_perChange_avg_income_M.pred <- predict(gss_perChange_avg_income_M.fit, n.ahead = 5)
+gss_perChange_avg_income_M.for <- forecast(gss_perChange_avg_income_M.fit, h = 5)
+#forecast
+plot.forecast(gss_perChange_avg_income_M.for, main="Forecast Percent Change in Male Income (10 Years)",sub="(Forecasted from last 5 data points)", ylab="% Change in Income", xaxt='n', xlab="Year")
+axis(1, at=seq(1, 10, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 10, by=1), par("usr")[3], labels = labels.F.inc.for, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+
+#income forecast data table
+income.forecast <- t(data.frame(gss_perChange_avg_income_F.for$mean, gss_perChange_avg_income_M.for$mean))
+colnames(income.forecast) <- c("2016", "2018", "2020", "2022","2024")
+rownames(income.forecast) <- c("Percent Change in Average Income, Female", "Percent Change in Average Income, Male")
+income.forecast
+
+#nominal income
+gss_avg_income_gender_workforce_F.fit<- auto.arima(gss_avg_income_gender_workforce_F$avgincome[24:28], d=2)
+gss_avg_income_gender_workforce_F.fit
+gss_avg_income_gender_workforce_F.pred <- predict(gss_avg_income_gender_workforce_F.fit, n.ahead = 5)
+
+gss_avg_income_gender_workforce_M.fit<- auto.arima(gss_avg_income_gender_workforce_M$avgincome[24:28], d=2)
+gss_avg_income_gender_workforce_M.fit
+gss_avg_income_gender_workforce_M.pred <-predict(gss_avg_income_gender_workforce_M.fit, n.ahead = 5)
+
+plot(gss_avg_income_gender_workforce_F.pred$pred, ylim=c(24000,35000))
+points(gss_avg_income_gender_workforce_M.pred$pred, type="l")
+
+#prop
+plot(gss.F.count.work$percent.working, main="Participation of Females in Workforce (1974-2014)", xaxt='n', type="l", ylab="Income (USD)", xlab="Year", ylim=c(30,90))
+axis(1, at=seq(1, 28, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 28, by=1), par("usr")[3], labels = gss.F.count.work$Gss.year.for.this.respondent, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+
+plot(gss.M.count.work$percent.working, main="Participation of Males in Workforce (1974-2014)", xaxt='n', type="l", ylab="Income (USD)", xlab="Year", ylim=c(30,90))
+axis(1, at=seq(1, 28, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 28, by=1), par("usr")[3], labels = gss.M.count.work$Gss.year.for.this.respondent, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+
+gss.F.count.work.percent.working.fit <- auto.arima(gss.F.count.work$percent.working[24:28], d=2)
+gss.F.count.work.percent.working.pred <- predict(gss.F.count.work.percent.working.fit, n.ahead = 5)
+gss.F.count.work.percent.working.for <- forecast(gss.F.count.work.percent.working.fit, h=5)
+
+#plot forecast
+plot.forecast(gss.F.count.work.percent.working.for, main="Forecast Female Participation in Workforce (10 Years)",sub="(Forecasted from last 5 data points)", ylab="% Participation", xaxt='n', xlab="Year", ylim=c(10,120))
+axis(1, at=seq(1, 10, by=1), labels = FALSE, cex.axis=0.5)
+labels.F.prop.for <- c(gss.F.count.work$Gss.year.for.this.respondent[24:28], "2016", "2018", "2020", "2022", "2024")
+text(seq(1, 10, by=1), par("usr")[3], labels = labels.F.prop.for, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+
+#males
+gss.M.count.work.percent.working.fit <- auto.arima(gss.M.count.work$percent.working[24:28], d=2)
+gss.M.count.work.percent.working.pred <- predict(gss.M.count.work.percent.working.fit, n.ahead = 5)
+gss.M.count.work.percent.working.for <- forecast(gss.M.count.work.percent.working.fit, h=5)
+
+#plot forecast
+plot.forecast(gss.M.count.work.percent.working.for, main="Forecast Male Participation in Workforce (10 Years)",sub="(Forecasted from last 5 data points)", ylab="% Participation", xaxt='n', xlab="Year", ylim=c(10,120))
+axis(1, at=seq(1, 10, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 10, by=1), par("usr")[3], labels = labels.F.prop.for, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+
+#participation in table
+participation.forecast <- t(data.frame(gss.F.count.work.percent.working.for$mean, gss.M.count.work.percent.working.for$mean))
+colnames(participation.forecast)<- c("2016", "2018", "2020", "2022","2024")
+rownames(participation.forecast) <- c("Percent Participation in Workforce, Female", "Percent Participation in Workforce, Male")
+participation.forecast
+
+#prestige
+#nominal score
+#females
+count.F.prestige.no.outliers.fit <- auto.arima(count.F.prestige.no.outliers$Avg.prestige.F[22:26], d=2)
+count.F.prestige.no.outliers.pred <- predict(count.F.prestige.no.outliers.fit, n.ahead = 5)
+count.F.prestige.no.outliers.for <- forecast(count.F.prestige.no.outliers.fit, h=5)
+
+#plot forecast
+plot.forecast(count.F.prestige.no.outliers.for, main="Forecast Female Job Prestige (10 Years)", sub="(Forecasted from last 5 data points)", ylab="Prestige Score", xaxt='n', xlab="Year", ylim=c(10,80))
+axis(1, at=seq(1, 10, by=1), labels = FALSE, cex.axis=0.5)
+labels.M.prestige.for <- c(count.F.prestige.no.outliers$Year[22:26],"2012", "2014", "2016", "2018", "2020")
+text(seq(1, 10, by=1), par("usr")[3], labels = labels.M.prestige.for, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+
+#males
+count.M.prestige.no.outliers.fit <- auto.arima(count.M.prestige.no.outliers$Avg.prestige.M[22:26], d=2)
+count.M.prestige.no.outliers.pred <- predict(count.M.prestige.no.outliers.fit, n.ahead = 5)
+count.M.prestige.no.outliers.for <- forecast(count.M.prestige.no.outliers.fit, h=5)
+
+#plot forecast
+plot.forecast(count.M.prestige.no.outliers.for, main="Forecast Male Job Prestige (10 Years)",sub="(Forecasted from last 5 data points)", ylab="Prestige Score", xaxt='n', xlab="Year", ylim=c(10,80))
+axis(1, at=seq(1, 10, by=1), labels = FALSE, cex.axis=0.5)
+labels.M.prestige.for <- c(count.M.prestige.no.outliers$Year[22:26],"2012", "2014", "2016", "2018", "2020")
+text(seq(1, 10, by=1), par("usr")[3], labels = labels.M.prestige.for, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+
+#prestige table
+prestige.forecast <- t(data.frame(count.F.prestige.no.outliers.for$mean, count.M.prestige.no.outliers.for$mean))
+colnames(prestige.forecast)<- c("2016", "2018", "2020", "2022","2024")
+rownames(prestige.forecast) <- c("Occupational Prestige, Female", "Occupational Prestige, Male")
+prestige.forecast
+```
+
+To examine predictive relationships between our time series data for different variables, we ran Granger causation tests. As with the correlations, we first looked for a possible causation between percent change in percentage of working women and: 
+1. percent change in income
+2. percent change in support for women as economic agents (overall and Women only)
+3. percent change in women's job satisfaction
+4. percent change in avg prestige for women
+
+Prior to conducting the Granger causation tests, we checked each of our time series for stationarity. Because we already mapped our nominal variables to percent change, linear trend had already been removed. Since we have only one observation per year, our data did not exhibit any annual seasonality. Additionally, in conducting the Granger causation tests, we used a lag order of 1 because we wanted to see if one time series could be predictive for the next year of a different time series. 
+
+```{r, granger} 
+#granger tests
+#check for stationarity of our time series
+#change in percent working
+adf.test(gss.F.count.work[2:26,]$working.percent.change, k = 1)
+#change in income
+adf.test(gss_perChange_avg_income_F$avgincome, k = 1)
+#change in support of women
+#overall
+adf.test(gss_women_work_count_changepercentapproval$percent, k = 1)
+#women only
+adf.test(gss_women_work_count_changepercentapproval_F$percent,k = 1)
+#change in job satisfaction
+adf.test(gss.F.count.work[2:28,]$jobsat.percent.change, k = 1)
+#change in prestige
+#run adf test on change in prestige
+adf.test(count.F.prestige.no.outliers[2:26,]$prestige.percent.change, k = 1)
+
+#VARselect function recommends lag order for time series
+VARselect(gss.F.count.work[2:26,]$working.percent.change, lag.max=10) $selection
+VARselect(gss_perChange_avg_income_F$avgincome, lag.max = 10) $selection
+VARselect(gss_women_work_count_changepercentapproval$percent, lag.max = 10) $selection
+VARselect(gss_women_work_count_changepercentapproval_F$percent, lag.max = 10) $selection
+VARselect(gss.F.count.work[2:28,]$jobsat.percent.change, lag.max = 10) $selection
+VARselect(count.F.prestige.no.outliers[2:26,]$prestige.percent.change, lag.max = 10) $selection
+
+
+#granger test - percent change vs. income
+grangertest(gss.F.count.work[2:26,]$working.percent.change, gss_perChange_avg_income_F$avgincome, order = 1)
+grangertest(gss_perChange_avg_income_F$avgincome, gss.F.count.work[2:26,]$working.percent.change, order = 1)
+
+#granger test - percent change vs. support (overall)
+grangertest(gss.F.count.work[2:26,]$working.percent.change, gss_women_work_count_changepercentapproval$percent, order = 1)
+grangertest(gss_women_work_count_changepercentapproval$percent, gss.F.count.work[2:26,]$working.percent.change, order = 1)
+
+#granger test - percent change vs. support (W only)
+grangertest(gss.F.count.work[2:26,]$working.percent.change, gss_women_work_count_changepercentapproval_F$percent, order = 1)
+grangertest(gss_women_work_count_changepercentapproval_F$percent, gss.F.count.work[2:26,]$working.percent.change, order = 1)
+
+#granger test - percent change vs. job satisfaction
+grangertest(gss.F.count.work[2:26,]$working.percent.change, gss.F.count.work[2:28,]$jobsat.percent.change, order = 1)
+grangertest(gss.F.count.work[2:28,]$jobsat.percent.change, gss.F.count.work[2:26,]$working.percent.change, order = 1)
+
+#granger test - percent change vs. prestige
+grangertest(gss.F.count.work[2:26,]$working.percent.change, count.F.prestige.no.outliers[2:26,]$prestige.percent.change, order = 1)
+grangertest(gss.F.count.work[2:28,]$jobsat.percent.change, count.F.prestige.no.outliers[2:26,]$prestige.percent.change, order = 1)
+
+```
+
+We ran additional Granger causation tests looking for predictive relationships between our other time series: 
+1.) income vs support (overall and W only)
+2.) income vs job satisfaction
+3.) income vs prestige
+4.) support (overall and W only) vs job satisfaction
+5.) support (overall and W only) vs prestige
+
+
+```{r, granger2}
+#income vs support (overall)
+grangertest(gss_perChange_avg_income_F$avgincome, gss_women_work_count_changepercentapproval$percent, order = 1)
+grangertest(gss_women_work_count_changepercentapproval$percent, gss_perChange_avg_income_F$avgincome, order = 1)
+
+#income vs support (W only)
+grangertest(gss_perChange_avg_income_F$avgincome, gss_women_work_count_changepercentapproval_F$percent, order = 1)
+grangertest(gss_women_work_count_changepercentapproval_F$percent, gss_perChange_avg_income_F$avgincome, order = 1)
+
+#income vs job satisfaction
+grangertest(gss_perChange_avg_income_F$avgincome, gss.F.count.work[2:28,]$jobsat.percent.change, order = 1)
+grangertest(gss.F.count.work[2:28,]$jobsat.percent.change, gss_perChange_avg_income_F$avgincome, order = 1)
+
+#income vs prestige
+grangertest(gss_perChange_avg_income_F$avgincome, count.F.prestige.no.outliers[2:26,]$prestige.percent.change, order = 1)
+grangertest(count.F.prestige.no.outliers[2:26,]$prestige.percent.change, gss_perChange_avg_income_F$avgincome, order = 1)
+
+#support (overall) vs job satisfaction
+grangertest(gss_women_work_count_changepercentapproval$percent, gss.F.count.work[2:28,]$jobsat.percent.change, order = 1)
+grangertest(gss.F.count.work[2:28,]$jobsat.percent.change, gss_women_work_count_changepercentapproval$percent, order = 1)
+
+#support (W only) vs job satisfaction
+grangertest(gss_women_work_count_changepercentapproval_F$percent, gss.F.count.work[2:28,]$jobsat.percent.change, order = 1)
+grangertest(gss.F.count.work[2:28,]$jobsat.percent.change, gss_women_work_count_changepercentapproval_F$percent, order = 1)
+
+#support (overall) vs prestige
+grangertest(gss_women_work_count_changepercentapproval$percent, count.F.prestige.no.outliers[2:26,]$prestige.percent.change, order = 1)
+grangertest(count.F.prestige.no.outliers[2:26,]$prestige.percent.change, gss_women_work_count_changepercentapproval$percent, order = 1)
+
+#support (W only) vs prestige
+grangertest(gss_women_work_count_changepercentapproval_F$percent, count.F.prestige.no.outliers[2:26,]$prestige.percent.change, order = 1)
+grangertest(count.F.prestige.no.outliers[2:26,]$prestige.percent.change, gss_women_work_count_changepercentapproval_F$percent, order = 1)
+```
+
+
+
+```{r, viz}
+
+
+#prop
+plot(gss.F.count.work$working.percent.change, type = "l", xlab = "Year", ylab = "% Change from Previous Year", main = "Percent Change in Participation in Workforce vs. Percent Change in Income (1974-2014)", xaxt='n', ylim=c(-30,30), col="red", cex.main = 0.75)
+
+plot(gss_perChange_avg_income_F$avgincome, main="Average Income of Female Workforce (1974-2014)", xaxt='n', ylab="Income (USD)", xlab="Year", ylim=c(-30,30))
+axis(1, at=seq(1, 28, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 28, by=1), par("usr")[3], labels = gss_perChange_avg_income_F$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0)
+
+barplot(gss.F.count.work$working.percent.change, main="Percent Change of Female Workforce (1974-2014)", xaxt='n', ylab="Income (USD)", xlab="Year", ylim=c(-30,30))
+axis(1, at=seq(1, 28, by=1), labels = FALSE, cex.axis=0.5)
+text(seq(1, 28, by=1), par("usr")[3], labels = gss_perChange_avg_income_F$year, pos = 1, xpd = TRUE, cex = 0.70, srt=45)
+abline(h=0)
+
+points(gss.F.count.work$working.percent.change, col='red')
+
+
+```
